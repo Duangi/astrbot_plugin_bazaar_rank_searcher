@@ -1,0 +1,11 @@
+{
+  "token": {
+    "description": "网页 Token",
+    "type": "string"
+  },
+  "season_id": {
+    "description": "赛季 ID",
+    "type": "string",
+    "default": "11"
+  }
+}
