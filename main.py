@@ -13,7 +13,14 @@ from astrbot.api import logger
 class BazaarRankPlugin(Star):
     def __init__(self, context: Context, config: Optional[AstrBotConfig] = None):
         super().__init__(context)
-        self.config = config if config is not None else context.config
+        # 兼容新旧版AstrBot API
+        if config is not None:
+            self.config = config
+        elif hasattr(context, 'config'):
+            self.config = context.config
+        else:
+            # 旧版API，通过其他方式获取配置
+            self.config = None
         
         # 使用规范的插件数据目录
         self.plugin_data_dir = StarTools.get_data_dir(self)
@@ -47,6 +54,12 @@ class BazaarRankPlugin(Star):
         self.session = aiohttp.ClientSession(timeout=timeout)
         
         # 检查必要配置
+        if not self.config:
+            logger.error("配置对象未初始化，插件无法同步数据！")
+            self.sync_error_message = "配置对象未初始化"
+            self.last_sync_successful = False
+            return
+            
         token = self.config.get("token")
         if not token:
             logger.error("未配置token，插件无法同步数据！")
@@ -129,6 +142,12 @@ class BazaarRankPlugin(Star):
     async def fetch_leaderboard(self):
         """定时获取全量数据，带空数据防御机制"""
         url = "https://www.playthebazaar.com/api/Leaderboards"
+        if not self.config:
+            logger.error("配置对象未初始化，无法同步数据！")
+            self.last_sync_successful = False
+            self.sync_error_message = "配置对象未初始化"
+            return
+            
         season_id = self.config.get("season_id", "11")  # 暂时保持硬编码，但可以优化
         token = self.config.get("token")
         
