@@ -23,14 +23,14 @@ class BazaarRankPlugin(Star):
             self.config = None
         
         # 使用规范的插件数据目录
-        # 兼容新旧版AstrBot API
+        # AstrBot v4.20.0的StarTools.get_data_dir()需要插件名称字符串
         try:
-            # 尝试新版API：传递self
-            self.plugin_data_dir = StarTools.get_data_dir(self)
+            # 首先尝试传递插件名称字符串
+            self.plugin_data_dir = StarTools.get_data_dir("astrbot_plugin_bazaar_rank_searcher")
         except (TypeError, AttributeError):
             try:
-                # 尝试旧版API：传递插件名称
-                self.plugin_data_dir = StarTools.get_data_dir("astrbot_plugin_bazaar_rank_searcher")
+                # 如果不行，尝试传递self（某些版本可能需要）
+                self.plugin_data_dir = StarTools.get_data_dir(self)
             except:
                 # 最后回退方案：使用相对路径
                 import os
