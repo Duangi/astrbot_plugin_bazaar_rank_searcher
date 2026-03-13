@@ -61,9 +61,12 @@ class BazaarRankPlugin(Star):
 
     async def on_enable(self):
         """框架生命周期钩子：插件启用时调用"""
+        logger.info("大巴扎排名插件开始启用...")
+        
         # 初始化aiohttp session（代码审查建议的修复）
         timeout = aiohttp.ClientTimeout(total=30, connect=10, sock_read=20)
         self.session = aiohttp.ClientSession(timeout=timeout)
+        logger.info("aiohttp session已初始化")
         
         # 检查必要配置
         if not self.config:
@@ -74,16 +77,17 @@ class BazaarRankPlugin(Star):
             
         token = self.config.get("token")
         if not token:
-            logger.error("未配置token，插件无法同步数据！")
+            logger.error("未配置token，插件无法同步数据！请在插件配置中设置token")
             self.sync_error_message = "未配置API Token"
             self.last_sync_successful = False
             # 仍然启动任务，但会跳过同步
         else:
-            logger.info("大巴扎排名插件已启用，Token配置正常")
+            logger.info(f"大巴扎排名插件已启用，Token配置正常（长度: {len(token)}）")
+            logger.info(f"赛季ID: {self.config.get('season_id', '11')}")
         
         # 在正确的事件循环中启动后台任务
         self.fetch_task = asyncio.create_task(self.start_fetching())
-        logger.info("后台同步任务已启动")
+        logger.info("后台同步任务已启动，将立即尝试第一次数据同步")
 
     def rebuild_index(self):
         """对数万条全量数据建立内存映射索引"""
