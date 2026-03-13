@@ -25,10 +25,16 @@ class BazaarRankPlugin(Star):
         # 使用规范的插件数据目录
         # 兼容新旧版AstrBot API
         try:
+            # 尝试新版API：传递self
             self.plugin_data_dir = StarTools.get_data_dir(self)
-        except TypeError:
-            # 旧版API，可能需要传递context
-            self.plugin_data_dir = StarTools.get_data_dir(context)
+        except (TypeError, AttributeError):
+            try:
+                # 尝试旧版API：传递插件名称
+                self.plugin_data_dir = StarTools.get_data_dir("astrbot_plugin_bazaar_rank_searcher")
+            except:
+                # 最后回退方案：使用相对路径
+                import os
+                self.plugin_data_dir = Path("data/plugin_data/bazaar_rank_searcher")
         
         self.rank_file = self.plugin_data_dir / "bazaar_rank.json"
         self.roster_file = self.plugin_data_dir / "group_roster.json"
