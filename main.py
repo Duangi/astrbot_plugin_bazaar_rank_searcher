@@ -15,7 +15,7 @@ class BazaarRankPlugin(Star):
         super().__init__(context)
         self.config = config
         
-        # 1. 使用规范的插件数据目录
+        # 使用规范的插件数据目录
         self.plugin_data_dir = StarTools.get_data_dir(self)
         self.rank_file = self.plugin_data_dir / "bazaar_rank.json"
         self.roster_file = self.plugin_data_dir / "group_roster.json"
@@ -23,23 +23,35 @@ class BazaarRankPlugin(Star):
         
         self.plugin_data_dir.mkdir(parents=True, exist_ok=True)
 
-        # 2. 内存数据缓存
-        self.leaderboard_data: List[Dict[str, Any]] = []     # 原始全量列表
-        self.name_to_entry: Dict[str, Dict[str, Any]] = {}   # 极速索引 {小写游戏名: 数据对象}
-        self.roster_data: Dict[str, str] = {}                # {标准化游戏名: 绑定时的平台昵称}
-        self.user_bindings: Dict[str, Dict[str, str]] = {}   # {group_id: {user_id: game_name}}
+        # 内存数据缓存
+        self.leaderboard_data: List[Dict[str, Any]] = []
+        self.name_to_entry: Dict[str, Dict[str, Any]] = {}
+        self.roster_data: Dict[str, str] = {}
+        self.user_bindings: Dict[str, Dict[str, str]] = {}
         self.last_update_str = "从未更新"
         self.total_entries = 0
+        self.last_sync_successful = True  # 新增：同步状态标记
+        self.sync_error_message = ""  # 新增：错误信息
 
-        # 3. 加载数据但不启动任务
+        # 加载数据但不启动任务
         self.load_local_data()
         self.fetch_task: Optional[asyncio.Task] = None
 
     async def on_enable(self):
         """框架生命周期钩子：插件启用时调用"""
+        # 检查必要配置
+        token = self.config.get("token")
+        if not token:
+            logger.error("未配置token，插件无法同步数据！")
+            self.sync_error_message = "未配置API Token"
+            self.last_sync_successful = False
+            # 仍然启动任务，但会跳过同步
+        else:
+            logger.info("大巴扎排名插件已启用，Token配置正常")
+        
         # 在正确的事件循环中启动后台任务
         self.fetch_task = asyncio.create_task(self.start_fetching())
-        logger.info("大巴扎排名插件已启用，后台同步任务已启动")
+        logger.info("后台同步任务已启动")
 
     def rebuild_index(self):
         """对数万条全量数据建立内存映射索引"""
@@ -58,7 +70,7 @@ class BazaarRankPlugin(Star):
                 with open(self.rank_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     self.leaderboard_data = data.get("entries", [])
-                    self.total_entries = data.get("totalEntries", 0)
+                    self.total_entries = self._safe_get_int(data, "totalEntries", 0)
                     ts = self.rank_file.stat().st_mtime
                     self.last_update_str = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
                     self.rebuild_index()
@@ -87,6 +99,17 @@ class BazaarRankPlugin(Star):
                 logger.error(f"加载用户绑定失败: {e}")
                 self.user_bindings = {}
 
+    def _safe_get_int(self, data: Dict, key: str, default: int = 0) -> int:
+        """安全获取整数值，避免None和类型错误"""
+        value = data.get(key)
+        if value is None:
+            return default
+        try:
+            return int(value)
+        except (ValueError, TypeError):
+            logger.warning(f"字段 {key} 的值 {value} 无法转换为整数，使用默认值 {default}")
+            return default
+
     def save_json(self, file_path: Path, data: Any):
         """通用的数据保存逻辑"""
         try:
@@ -99,11 +122,15 @@ class BazaarRankPlugin(Star):
     async def fetch_leaderboard(self):
         """定时获取全量数据，带空数据防御机制"""
         url = "https://www.playthebazaar.com/api/Leaderboards"
-        season_id = self.config.get("season_id", "11") 
+        season_id = self.config.get("season_id", "11")  # 暂时保持硬编码，但可以优化
         token = self.config.get("token")
+        
         if not token:
-            logger.warning("未配置token，跳过数据同步")
-            return 
+            if self.last_sync_successful:  # 只在状态变化时记录
+                logger.error("未配置token，无法同步数据！请在插件配置中设置token")
+                self.last_sync_successful = False
+                self.sync_error_message = "未配置API Token"
+            return
 
         headers = {
             "Authorization": f"{token}",
@@ -121,33 +148,50 @@ class BazaarRankPlugin(Star):
                         data = await resp.json()
                         entries = data.get("entries", [])
                         
-                        # 【核心逻辑】如果获取到的数据为空，不更新文件，防止覆盖本地有效数据
                         if not entries:
                             logger.warning("官方返回数据为空，保持本地缓存不更新。")
+                            self.last_sync_successful = False
+                            self.sync_error_message = "API返回空数据"
                             return
 
                         self.leaderboard_data = entries
-                        self.total_entries = data.get("totalEntries", 0)
+                        self.total_entries = self._safe_get_int(data, "totalEntries", 0)
                         self.last_update_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        self.last_sync_successful = True
+                        self.sync_error_message = ""
                         
-                        self.rebuild_index() # 重新构建索引
+                        self.rebuild_index()
                         self.save_json(self.rank_file, data)
                         logger.info(f"排行榜数据同步成功，共 {self.total_entries} 条记录")
                     else:
-                        logger.error(f"API请求失败，状态码: {resp.status}, 响应: {await resp.text()}")
+                        error_text = await resp.text()
+                        logger.error(f"API请求失败，状态码: {resp.status}, 响应: {error_text[:200]}")
+                        self.last_sync_successful = False
+                        self.sync_error_message = f"API错误: {resp.status}"
             except asyncio.TimeoutError:
                 logger.error("API请求超时")
+                self.last_sync_successful = False
+                self.sync_error_message = "请求超时"
             except aiohttp.ClientError as e:
                 logger.error(f"网络请求错误: {e}")
+                self.last_sync_successful = False
+                self.sync_error_message = f"网络错误: {str(e)[:50]}"
             except Exception as e:
                 logger.error(f"排行榜同步异常: {e}")
+                self.last_sync_successful = False
+                self.sync_error_message = f"同步异常: {str(e)[:50]}"
 
     async def start_fetching(self):
-        """后台数据同步任务"""
+        """后台数据同步任务，使用固定间隔"""
         try:
             while True:
+                start_time = asyncio.get_event_loop().time()
                 await self.fetch_leaderboard()
-                await asyncio.sleep(600)  # 每10分钟同步一次
+                elapsed = asyncio.get_event_loop().time() - start_time
+                
+                # 计算剩余等待时间，保持固定间隔
+                sleep_time = max(0, 600 - elapsed)  # 确保至少等待600秒
+                await asyncio.sleep(sleep_time)
         except asyncio.CancelledError:
             logger.info("后台同步任务已取消")
             raise
@@ -164,18 +208,23 @@ class BazaarRankPlugin(Star):
         Args:
             game_name(string): 想要绑定的游戏玩家名称。
         '''
+        # 检查数据同步状态
+        if not self.last_sync_successful and self.sync_error_message:
+            yield event.plain_result(
+                f"⚠️ 数据同步异常，绑定功能可能受限\n"
+                f"错误: {self.sync_error_message}\n"
+                f"数据时间: {self.last_update_str}"
+            )
+        
         user_id = str(event.get_sender_id())
         group_id = str(event.get_group_id())
         sender = event.message_obj.sender
         nickname = sender.nickname if sender.nickname else "N/A"
 
-        # 标准化游戏名（统一小写用于查询）
         normalized_name = game_name.lower()
         
-        # 检查玩家是否存在
         exists = normalized_name in self.name_to_entry
         
-        # 产品洁癖：如果玩家不存在，阻止绑定
         if not exists:
             yield event.plain_result(
                 f"❌ 绑定失败！\n"
@@ -188,28 +237,28 @@ class BazaarRankPlugin(Star):
             )
             return
 
-        # 获取标准化后的实际用户名（保持原始大小写）
         actual_username = self.name_to_entry[normalized_name].get("Username", game_name)
         
-        # 初始化群绑定字典
         if group_id not in self.user_bindings:
             self.user_bindings[group_id] = {}
         
-        # 保存绑定关系（按群隔离）
         self.user_bindings[group_id][user_id] = actual_username
         self.save_json(self.binding_file, self.user_bindings)
 
-        # 保存昵称映射（使用标准化用户名作为key）
         self.roster_data[actual_username] = nickname
         self.save_json(self.roster_file, self.roster_data)
 
+        # 安全获取排名
+        player_data = self.name_to_entry[normalized_name]
+        position = self._safe_get_int(player_data, "Position", 999999)
+        
         yield event.plain_result(
             f"✅ 绑定成功！\n"
             f"🆔 游戏 ID: {actual_username}\n"
             f"🔢 QQ 号: {user_id}\n"
             f"👤 平台昵称: {nickname}\n"
             f"👥 群组: {group_id}\n"
-            f"🏆 当前排名: #{self.name_to_entry[normalized_name].get('Position', 'N/A')}"
+            f"🏆 当前排名: #{position}"
         )
 
     @filter.llm_tool("query_rank")
@@ -220,21 +269,28 @@ class BazaarRankPlugin(Star):
         Args:
             name(string): 可选。仅当用户明确要求查询"某个特定名字"时才填写。如果用户查询"我"或未提姓名，请保持为空。
         '''
+        # 检查数据同步状态
+        if not self.last_sync_successful:
+            error_msg = f"数据同步异常: {self.sync_error_message}" if self.sync_error_message else "数据同步失败"
+            yield event.plain_result(
+                f"⚠️ 数据可能已过期\n"
+                f"错误: {error_msg}\n"
+                f"数据时间: {self.last_update_str}\n"
+                f"💡 结果仅供参考"
+            )
+        
         user_id = str(event.get_sender_id())
         group_id = str(event.get_group_id())
         sender = event.message_obj.sender
         current_platform_nickname = sender.nickname if sender.nickname else "N/A"
         
         target_name = name
-        is_temporary = True  # 标记是否为临时查询
+        is_temporary = True
 
-        # 如果没有传名字，走绑定查询逻辑
         if not target_name:
-            # 先尝试从当前群获取绑定
             if group_id in self.user_bindings:
                 target_name = self.user_bindings[group_id].get(user_id)
             
-            # 如果当前群没有，尝试全局查找（兼容旧数据）
             if not target_name:
                 for gid, bindings in self.user_bindings.items():
                     if user_id in bindings:
@@ -250,18 +306,15 @@ class BazaarRankPlugin(Star):
             yield event.plain_result("全量名单正在同步中，请稍后再试。")
             return
 
-        # 利用内存索引进行 O(1) 检索
         normalized_name = target_name.lower()
         player = self.name_to_entry.get(normalized_name)
 
         if player:
-            # 安全获取字段，避免KeyError
             username = player.get("Username", target_name)
-            position = player.get("Position", "N/A")
+            position = self._safe_get_int(player, "Position", 999999)
             rating = player.get("Rating", "N/A")
             
             if is_temporary:
-                # 【临时查询】隐私模式
                 yield event.plain_result(
                     f"【临时查询结果】\n"
                     f"🆔 游戏 ID: {username}\n"
@@ -270,7 +323,6 @@ class BazaarRankPlugin(Star):
                     f"🕒 数据时间: {self.last_update_str}"
                 )
             else:
-                # 【绑定查询】完整模式
                 yield event.plain_result(
                     f"【个人绑定查询】\n"
                     f"🆔 游戏 ID: {username}\n"
@@ -281,7 +333,6 @@ class BazaarRankPlugin(Star):
                     f"🕒 数据时间: {self.last_update_str}"
                 )
         else:
-            # 查无此人的输出
             if is_temporary:
                 yield event.plain_result(f"❌ 未能找到玩家: {target_name}")
             else:
@@ -293,7 +344,6 @@ class BazaarRankPlugin(Star):
         '''查看本群已绑定成员在全服中的内部顺位。'''
         group_id = str(event.get_group_id())
         
-        # 获取当前群的绑定用户
         group_bindings = self.user_bindings.get(group_id, {})
         
         if not group_bindings:
@@ -305,12 +355,12 @@ class BazaarRankPlugin(Star):
             normalized_name = game_name.lower()
             player = self.name_to_entry.get(normalized_name)
             if player:
-                # 安全获取字段
+                # 安全获取所有字段
                 p_copy = {
                     'Username': player.get('Username', game_name),
-                    'Position': player.get('Position', 999999),
+                    'Position': self._safe_get_int(player, 'Position', 999999),
                     'Rating': player.get('Rating', 0),
-                    'platform_nick': self.roster_data.get(game_name, "玩家")  # 使用标准化用户名
+                    'platform_nick': self.roster_data.get(game_name, "玩家")
                 }
                 group_list.append(p_copy)
         
@@ -318,11 +368,16 @@ class BazaarRankPlugin(Star):
             yield event.plain_result("当前已绑定的玩家均未出现在全量榜单中。")
             return
 
-        # 按排名排序
-        group_list.sort(key=lambda x: x['Position'])
+        # 安全排序：确保所有Position都是整数
+        try:
+            group_list.sort(key=lambda x: x['Position'])
+        except (TypeError, KeyError) as e:
+            logger.error(f"排序失败: {e}")
+            # 降级处理：按用户名排序
+            group_list.sort(key=lambda x: x['Username'])
 
         result = [f"📅 群内绑定成员顺位 (共 {len(group_list)}/{len(group_bindings)} 人上榜)"]
-        for index, p in enumerate(group_list[:50]):  # 限制显示前50名
+        for index, p in enumerate(group_list[:50]):
             icon = "🥇" if index == 0 else "🥈" if index == 1 else "🥉" if index == 2 else f"{index+1}."
             result.append(f"{icon} {p['Username']}({p['platform_nick']}) - #{p['Position']} ({p['Rating']}分)")
         
