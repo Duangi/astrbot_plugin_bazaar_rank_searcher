@@ -11,9 +11,9 @@ from astrbot.api import logger
 
 @register("astrbot_plugin_bazaar_rank_searcher", "Duang", "大巴扎全量排名：隐私模式与绑定系统", "1.8.0")
 class BazaarRankPlugin(Star):
-    def __init__(self, context: Context, config: AstrBotConfig):
+    def __init__(self, context: Context, config: Optional[AstrBotConfig] = None):
         super().__init__(context)
-        self.config = config
+        self.config = config if config is not None else context.config
         
         # 使用规范的插件数据目录
         self.plugin_data_dir = StarTools.get_data_dir(self)
@@ -32,6 +32,9 @@ class BazaarRankPlugin(Star):
         self.total_entries = 0
         self.last_sync_successful = True  # 新增：同步状态标记
         self.sync_error_message = ""  # 新增：错误信息
+        
+        # 修复aiohttp.ClientSession反模式（代码审查建议）
+        self.session: Optional[aiohttp.ClientSession] = None
 
         # 加载数据但不启动任务
         self.load_local_data()
@@ -39,6 +42,10 @@ class BazaarRankPlugin(Star):
 
     async def on_enable(self):
         """框架生命周期钩子：插件启用时调用"""
+        # 初始化aiohttp session（代码审查建议的修复）
+        timeout = aiohttp.ClientTimeout(total=30, connect=10, sock_read=20)
+        self.session = aiohttp.ClientSession(timeout=timeout)
+        
         # 检查必要配置
         token = self.config.get("token")
         if not token:
@@ -139,11 +146,12 @@ class BazaarRankPlugin(Star):
             "x-platform": "Tempo"
         }
 
-        timeout = aiohttp.ClientTimeout(total=30, connect=10, sock_read=20)
-        
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            try:
-                async with session.get(url, headers=headers, params={"seasonId": season_id}) as resp:
+        if not self.session:
+            logger.error("aiohttp session未初始化")
+            return
+            
+        try:
+            async with self.session.get(url, headers=headers, params={"seasonId": season_id}) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         entries = data.get("entries", [])
@@ -388,6 +396,12 @@ class BazaarRankPlugin(Star):
 
     async def terminate(self):
         """插件终止时的清理工作"""
+        # 关闭aiohttp session
+        if self.session:
+            await self.session.close()
+            self.session = None
+            logger.info("aiohttp session已关闭")
+        
         if self.fetch_task:
             self.fetch_task.cancel()
             try:
