@@ -23,7 +23,13 @@ class BazaarRankPlugin(Star):
             self.config = None
         
         # 使用规范的插件数据目录
-        self.plugin_data_dir = StarTools.get_data_dir(self)
+        # 兼容新旧版AstrBot API
+        try:
+            self.plugin_data_dir = StarTools.get_data_dir(self)
+        except TypeError:
+            # 旧版API，可能需要传递context
+            self.plugin_data_dir = StarTools.get_data_dir(context)
+        
         self.rank_file = self.plugin_data_dir / "bazaar_rank.json"
         self.roster_file = self.plugin_data_dir / "group_roster.json"
         self.binding_file = self.plugin_data_dir / "user_bindings.json"
