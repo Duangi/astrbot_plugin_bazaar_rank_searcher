@@ -152,42 +152,42 @@ class BazaarRankPlugin(Star):
             
         try:
             async with self.session.get(url, headers=headers, params={"seasonId": season_id}) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        entries = data.get("entries", [])
-                        
-                        if not entries:
-                            logger.warning("官方返回数据为空，保持本地缓存不更新。")
-                            self.last_sync_successful = False
-                            self.sync_error_message = "API返回空数据"
-                            return
-
-                        self.leaderboard_data = entries
-                        self.total_entries = self._safe_get_int(data, "totalEntries", 0)
-                        self.last_update_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        self.last_sync_successful = True
-                        self.sync_error_message = ""
-                        
-                        self.rebuild_index()
-                        self.save_json(self.rank_file, data)
-                        logger.info(f"排行榜数据同步成功，共 {self.total_entries} 条记录")
-                    else:
-                        error_text = await resp.text()
-                        logger.error(f"API请求失败，状态码: {resp.status}, 响应: {error_text[:200]}")
+                if resp.status == 200:
+                    data = await resp.json()
+                    entries = data.get("entries", [])
+                    
+                    if not entries:
+                        logger.warning("官方返回数据为空，保持本地缓存不更新。")
                         self.last_sync_successful = False
-                        self.sync_error_message = f"API错误: {resp.status}"
-            except asyncio.TimeoutError:
-                logger.error("API请求超时")
-                self.last_sync_successful = False
-                self.sync_error_message = "请求超时"
-            except aiohttp.ClientError as e:
-                logger.error(f"网络请求错误: {e}")
-                self.last_sync_successful = False
-                self.sync_error_message = f"网络错误: {str(e)[:50]}"
-            except Exception as e:
-                logger.error(f"排行榜同步异常: {e}")
-                self.last_sync_successful = False
-                self.sync_error_message = f"同步异常: {str(e)[:50]}"
+                        self.sync_error_message = "API返回空数据"
+                        return
+
+                    self.leaderboard_data = entries
+                    self.total_entries = self._safe_get_int(data, "totalEntries", 0)
+                    self.last_update_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    self.last_sync_successful = True
+                    self.sync_error_message = ""
+                    
+                    self.rebuild_index()
+                    self.save_json(self.rank_file, data)
+                    logger.info(f"排行榜数据同步成功，共 {self.total_entries} 条记录")
+                else:
+                    error_text = await resp.text()
+                    logger.error(f"API请求失败，状态码: {resp.status}, 响应: {error_text[:200]}")
+                    self.last_sync_successful = False
+                    self.sync_error_message = f"API错误: {resp.status}"
+        except asyncio.TimeoutError:
+            logger.error("API请求超时")
+            self.last_sync_successful = False
+            self.sync_error_message = "请求超时"
+        except aiohttp.ClientError as e:
+            logger.error(f"网络请求错误: {e}")
+            self.last_sync_successful = False
+            self.sync_error_message = f"网络错误: {str(e)[:50]}"
+        except Exception as e:
+            logger.error(f"排行榜同步异常: {e}")
+            self.last_sync_successful = False
+            self.sync_error_message = f"同步异常: {str(e)[:50]}"
 
     async def start_fetching(self):
         """后台数据同步任务，使用固定间隔"""
